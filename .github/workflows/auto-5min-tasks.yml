@@ -1,0 +1,119 @@
+name: Generate Daily 5-Minute Tasks
+on:
+  schedule:
+    # 毎日朝7時（JST）= UTC 22時
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  generate-tasks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Generate random 5-min task
+        id: generate-task
+        run: |
+          # タスクプールからランダムに選択
+          TASKS=(
+            "READMEの誤字脱字をチェック"
+            "プロジェクトの目的を1文で要約"
+            "関連プロジェクトへのリンクを1つ追加"
+            "使用技術リストを更新"
+            "次のマイルストーンを定義"
+            "スクリーンショットを1枚追加"
+            "インストール手順を確認"
+            "貢献者ガイドラインを追加"
+            "ライセンス情報を確認"
+            "プロジェクトアイコンを設定"
+          )
+          
+          # ランダムに3つ選択
+          SELECTED_TASKS=()
+          for i in {1..3}; do
+            INDEX=$((RANDOM % ${#TASKS[@]}))
+            SELECTED_TASKS+=("${TASKS[$INDEX]}")
+          done
+          
+          echo "::set-output name=task1::${SELECTED_TASKS[0]}"
+          echo "::set-output name=task2::${SELECTED_TASKS[1]}"
+          echo "::set-output name=task3::${SELECTED_TASKS[2]}"
+          
+      - name: Select target project
+        id: select-project
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 最も古い更新のプロジェクトを選択
+          python -c "
+          import os
+          from github import Github
+          from datetime import datetime
+          
+          g = Github(os.environ['GITHUB_TOKEN'])
+          user = g.get_user()
+          
+          oldest_repo = None
+          oldest_date = datetime.now()
+          
+          for repo in user.get_repos():
+              if repo.name.startswith(('WD', 'TM', 'DN', 'MA')):
+                  if repo.updated_at < oldest_date:
+                      oldest_date = repo.updated_at
+                      oldest_repo = repo
+          
+          if oldest_repo:
+              days_ago = (datetime.now() - oldest_date).days
+              print(f'::set-output name=repo::{oldest_repo.name}')
+              print(f'::set-output name=days::{days_ago}')
+          "
+          
+      - name: Create daily task issue
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          script: |
+            const targetRepo = '${{ steps.select-project.outputs.repo }}';
+            const daysSinceUpdate = '${{ steps.select-project.outputs.days }}';
+            
+            const issueBody = `
+            ## 🎯 本日の5分タスク
+            
+            このプロジェクトは${daysSinceUpdate}日間更新されていません。
+            以下の簡単なタスクから1つ選んで実行しましょう！
+            
+            ### タスクリスト
+            - [ ] ${{ steps.generate-task.outputs.task1 }}
+            - [ ] ${{ steps.generate-task.outputs.task2 }}
+            - [ ] ${{ steps.generate-task.outputs.task3 }}
+            
+            ### 💡 ヒント
+            - 完璧を求めず、小さな改善から始めましょう
+            - 5分で終わらなければ、続きは明日に
+            - 完了したらこのIssueをクローズしてください
+            
+            ---
+            *このIssueは自動生成されました by WD132_project-vitality-system*
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: targetRepo,
+              title: `[5分タスク] ${new Date().toISOString().slice(0,10)}`,
+              body: issueBody,
+              labels: ['5min-task', 'good-first-issue']
+            });
+            
+      - name: Update project dashboard
+        run: |
+          echo "Task created for ${{ steps.select-project.outputs.repo }}"
+          # ダッシュボード更新スクリプトを実行
+          python scripts/update_dashboard.py \
+            --project "${{ steps.select-project.outputs.repo }}" \
+            --action "task_created"

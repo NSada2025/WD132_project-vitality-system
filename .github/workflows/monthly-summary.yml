@@ -1,0 +1,71 @@
+name: Monthly Project Summary
+on:
+  schedule:
+    # 毎月1日朝10時（JST）= UTC 1時
+    - cron: '0 1 1 * *'
+  workflow_dispatch:
+
+jobs:
+  generate-monthly-summary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          pip install PyGithub matplotlib seaborn pandas
+          
+      - name: Collect monthly statistics
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/collect_monthly_stats.py
+          
+      - name: Generate visualization
+        run: |
+          python scripts/generate_charts.py
+          
+      - name: Create summary report
+        id: create-report
+        run: |
+          MONTH=$(date -d "1 day ago" +%Y-%m)
+          python scripts/create_monthly_report.py --month $MONTH
+          echo "::set-output name=month::$MONTH"
+          
+      - name: Create summary issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const month = '${{ steps.create-report.outputs.month }}';
+            const reportPath = `reports/monthly_${month}.md`;
+            const reportContent = fs.readFileSync(reportPath, 'utf8');
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: 'WD132_project-vitality-system',
+              title: `📊 月次レポート: ${month}`,
+              body: reportContent,
+              labels: ['monthly-report', 'statistics']
+            });
+            
+      - name: Archive reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: monthly-report-${{ steps.create-report.outputs.month }}
+          path: |
+            reports/monthly_*.md
+            reports/charts/*.png
+            
+      - name: Send Discord summary
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python scripts/discord_monthly_summary.py \
+            --month ${{ steps.create-report.outputs.month }}

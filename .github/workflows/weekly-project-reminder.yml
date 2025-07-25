@@ -1,0 +1,97 @@
+name: Weekly Project Reminder
+on:
+  schedule:
+    # 毎週月曜日朝8時（JST）= 日曜日UTC 23時
+    - cron: '0 23 * * 0'
+  workflow_dispatch:
+    inputs:
+      target_projects:
+        description: 'Target project codes (comma separated)'
+        required: false
+        default: 'all'
+
+jobs:
+  remind-stale-projects:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Find stale projects
+        id: find-stale
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -c "
+          import os
+          from datetime import datetime, timedelta
+          from github import Github
+          
+          g = Github(os.environ['GITHUB_TOKEN'])
+          user = g.get_user()
+          
+          stale_projects = []
+          sleeping_projects = []
+          
+          for repo in user.get_repos():
+              if repo.name.startswith(('WD', 'TM', 'DN', 'MA', 'AD')):
+                  last_update = repo.updated_at
+                  days_since_update = (datetime.now() - last_update).days
+                  
+                  if days_since_update > 30:
+                      stale_projects.append(f'{repo.name} ({days_since_update} days)')
+                  elif days_since_update > 7:
+                      sleeping_projects.append(f'{repo.name} ({days_since_update} days)')
+          
+          print(f'::set-output name=stale::{','.join(stale_projects)}')
+          print(f'::set-output name=sleeping::{','.join(sleeping_projects)}')
+          "
+          
+      - name: Create reminder issue
+        if: steps.find-stale.outputs.stale != ''
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const staleProjects = '${{ steps.find-stale.outputs.stale }}'.split(',');
+            const sleepingProjects = '${{ steps.find-stale.outputs.sleeping }}'.split(',');
+            
+            const issueBody = `
+            ## 📊 週次プロジェクトレビュー
+            
+            ### 🔴 要注意プロジェクト（30日以上更新なし）
+            ${staleProjects.map(p => `- ${p}`).join('\n')}
+            
+            ### 🟡 スリープ中プロジェクト（7-30日更新なし）
+            ${sleepingProjects.map(p => `- ${p}`).join('\n')}
+            
+            ### 💡 5分でできるタスク提案
+            - README.mdに現在の状況を1行追加
+            - 次のステップをIssueとして作成
+            - 関連プロジェクトとのリンクを追加
+            - 小さなバグ修正やタイポ修正
+            
+            ### 🎯 今週の目標
+            最低1つのプロジェクトに小さな更新を加えましょう！
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: 'WD132_project-vitality-system',
+              title: `[${new Date().toISOString().slice(0,10)}] 週次プロジェクトレビュー`,
+              body: issueBody,
+              labels: ['reminder', 'health-check']
+            });
+            
+      - name: Send Discord notification
+        if: steps.find-stale.outputs.stale != ''
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python scripts/discord_reminder.py \
+            --stale "${{ steps.find-stale.outputs.stale }}" \
+            --sleeping "${{ steps.find-stale.outputs.sleeping }}"

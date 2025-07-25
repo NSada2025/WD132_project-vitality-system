@@ -1,0 +1,57 @@
+name: Daily Project Health Check
+on:
+  schedule:
+    # 毎日朝9時（JST）に実行 = UTC 0時
+    - cron: '0 0 * * *'
+  # 手動実行も可能にする
+  workflow_dispatch:
+
+jobs:
+  check-project-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          pip install PyGithub pandas matplotlib discord-webhook
+          
+      - name: Check all WD projects health
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python scripts/health_checker.py
+          
+      - name: Generate health report
+        run: |
+          python scripts/generate_report.py
+          
+      - name: Upload health report
+        uses: actions/upload-artifact@v3
+        with:
+          name: health-report-${{ github.run_number }}
+          path: reports/health_report_*.md
+          
+      - name: Update README badges
+        run: |
+          python scripts/update_badges.py
+          
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md
+          git diff --quiet && git diff --staged --quiet || git commit -m "[Auto] Update project health badges"
+          
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
